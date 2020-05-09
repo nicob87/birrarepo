@@ -2,24 +2,48 @@ import serial
 import time
 from influxdb import InfluxDBClient
 from influxdb.client import InfluxDBClientError
+import threading
 import datetime
 import random
 import time
+import sys
+import argparse
+import subprocess
 
+sensors = {
+    b"uno":0.0,
+    b"dos":0.0,
+    b"tres":0.0,
+    b"cuatro":0.0,
+    b"cinco":0.0,
+    b"seis":0.0,
+}
 
-class Reader:
+class Reader(threading.Thread):
     def __init__(self, tty_name="/dev/ttyACM0"):
+        super(Reader, self).__init__(daemon=True)
         self.ser = serial.Serial()
         self.ser.port = tty_name
         # If it breaks try the below
         #self.serConf() # Uncomment lines here till it works
 
         self.ser.open()
-        self.ser.flushInput()
-        self.ser.flushOutput()
 
         #self.addr = None
         #self.setAddress(0)
+
+    def update_sensor(self,l):
+        for s in sensors.keys():
+            if s in l:
+                sensors[s] = self.extract_value(l)
+                print("updating sensor: {}:{}".format(s,sensors[s]))
+
+    def run(self):
+        self.flush()
+        while(True):
+            l = self.readline()
+            self.update_sensor(l)
+
     def flush(self):
         self.ser.flushInput()
         self.ser.flushOutput()
@@ -35,7 +59,7 @@ class Reader:
     def extract_value(self, line):
         #Out[12]: b'Temperature tres is: 20.62chau\r\n'
         start = line.find(b":") + 2
-        end = line.find(b"c")
+        end = line.find(b"chau")
         return float(eval(line[start:end]))
 
     def get_sensor(self, name):
@@ -62,8 +86,9 @@ class Reader:
 
 
 
-class InfluxLoader:
+class InfluxLoader(threading.Thread):
     def __init__(self, reader):
+        super(InfluxLoader, self).__init__(daemon=True)
         self.r = reader
         USER = 'root'
         PASSWORD = 'root'
@@ -99,8 +124,86 @@ class InfluxLoader:
         while True:
             self.load_temp_to_db()
 
+class FilePrinter(threading.Thread):
+    def __init__(self):
+        super(FilePrinter, self).__init__(daemon=True)
+    def run(self):
+        with open("/tmp/a", "w") as f:
+            while True:
+                for k,v in sensors.items():
+                    f.write("{} {} Celsius\n".format(k, v))
+                    f.flush()
+                time.sleep(4)
+
+
+class ThermalController(threading.Thread):
+    def __init__(self, temp, sensor, use_real_heater):
+        super(ThermalController, self).__init__(daemon=True)
+        self.heating = True
+        self.max = temp
+        self.min = temp - 1.0
+        self.s = sensor
+        self.use_real_heater = use_real_heater
+        print("USE_REAL_HEATER = ", use_real_heater)
+        if self.use_real_heater:
+            subprocess.call("echo out /sys/class/gpio/gpio48/direction")
+
+    def heater_on(self):
+        print("heater on")
+        if self.use_real_heater:
+            subprocess.call("echo 1 /sys/class/gpio/gpio48/value")
+
+    def heater_off(self):
+        print("heater off")
+        if self.use_real_heater:
+            subprocess.call("echo 0 /sys/class/gpio/gpio48/value")
+
+    def run(self):
+        while True:
+            temp = sensors[self.s]
+
+            if self.heating and temp < self.max:
+                self.heater_on()
+            elif self.heating and temp >= self.max:
+                self.heater_off()
+                self.heating = False
+            elif not self.heating and temp < self.min:
+                self.heater_on()
+                self.heating = True
+            elif not self.heating and temp >= self.min:
+                self.heater_off()
+                print("doing nothing")
+
+            time.sleep(2)
+
+
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('--use-real-heater', action='store_true')
+    parser.add_argument("-t", "--temp", type=float, required=True, help="control temperature")
+    parser.add_argument("-s", "--sensor",
+                        choices=["uno","dos","tres","cuatro","cinco","seis"],
+                        required=True,
+                        help="sensor_to control")
+
+    args=parser.parse_args()
+
     r = Reader()
-    il = InfluxLoader(r)
-    il.run()
+    r.start()
+
+    fp = FilePrinter()
+    fp.start()
+
+    tc=ThermalController( temp=args.temp,
+                         sensor=args.sensor.encode("utf-8"),
+                         use_real_heater=args.use_real_heater,
+    )
+    tc.start()
+
+
+
+    while True:
+        print ("main_loop doing nothing")
+        time.sleep(6)
 
