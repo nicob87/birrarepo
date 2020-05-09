@@ -87,9 +87,8 @@ class Reader(threading.Thread):
 
 
 class InfluxLoader(threading.Thread):
-    def __init__(self, reader):
+    def __init__(self, sensor):
         super(InfluxLoader, self).__init__(daemon=True)
-        self.r = reader
         USER = 'root'
         PASSWORD = 'root'
         DBNAME = 'mydb'
@@ -98,11 +97,11 @@ class InfluxLoader(threading.Thread):
         self.client = InfluxDBClient(host, port, USER, PASSWORD, DBNAME)
 
         self.retention_policy = 'awesome_policy'
-        self.client.create_retention_policy(self.retention_policy, '3d', 3, default=True)
+        self.s = sensor
+        #self.client.create_retention_policy(self.retention_policy, '3d', 3, default=True)
 
     def load_temp_to_db(self):
-        value = self.r.get_sensor(b"seis")
-        print("read: %f" % value)
+        value = sensors[self.s]
         series = []
         pointValues = {
             "time": self.now(),
@@ -122,6 +121,7 @@ class InfluxLoader(threading.Thread):
 
     def run(self):
         while True:
+            time.sleep(5)
             self.load_temp_to_db()
 
 class FilePrinter(threading.Thread):
@@ -146,17 +146,18 @@ class ThermalController(threading.Thread):
         self.use_real_heater = use_real_heater
         print("USE_REAL_HEATER = ", use_real_heater)
         if self.use_real_heater:
-            subprocess.call("echo out /sys/class/gpio/gpio48/direction")
+            subprocess.call("echo out > /sys/class/gpio/gpio48/direction",
+                            shell=True)
 
     def heater_on(self):
         print("heater on")
         if self.use_real_heater:
-            subprocess.call("echo 1 /sys/class/gpio/gpio48/value")
+            subprocess.call("echo 1 > /sys/class/gpio/gpio48/value", shell=True)
 
     def heater_off(self):
         print("heater off")
         if self.use_real_heater:
-            subprocess.call("echo 0 /sys/class/gpio/gpio48/value")
+            subprocess.call("echo 0 > /sys/class/gpio/gpio48/value", shell=True)
 
     def run(self):
         while True:
@@ -201,7 +202,8 @@ if __name__ == "__main__":
     )
     tc.start()
 
-
+    il=InfluxLoader(sensor=args.sensor.encode("utf-8"))
+    il.start() #or run?
 
     while True:
         print ("main_loop doing nothing")
