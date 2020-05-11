@@ -38,6 +38,9 @@ class Reader(threading.Thread):
                 sensors[s] = self.extract_value(l)
                 print("updating sensor: {}:{}".format(s,sensors[s]))
 
+    def write(self, data):
+        self.ser.write(data)
+
     def run(self):
         self.flush()
         while(True):
@@ -117,6 +120,7 @@ class InfluxLoader(threading.Thread):
         self.client.write_points(series, retention_policy=self.retention_policy)
 
     def now(self):
+        print("today = {}".format(datetime.datetime.today()))
         return datetime.datetime.today()
 
     def run(self):
@@ -137,13 +141,16 @@ class FilePrinter(threading.Thread):
 
 
 class ThermalController(threading.Thread):
-    def __init__(self, temp, sensor, use_real_heater):
+    def __init__(self, temp, sensor, use_real_heater, use_serial, reader=None):
         super(ThermalController, self).__init__(daemon=True)
+        self.use_serial = use_serial
+        self.reader = reader
         self.heating = True
         self.max = temp
         self.min = temp - 1.0
         self.s = sensor
         self.use_real_heater = use_real_heater
+        self.use_serial = use_serial
         print("USE_REAL_HEATER = ", use_real_heater)
         if self.use_real_heater:
             subprocess.call("echo out > /sys/class/gpio/gpio48/direction",
@@ -153,11 +160,17 @@ class ThermalController(threading.Thread):
         print("heater on")
         if self.use_real_heater:
             subprocess.call("echo 1 > /sys/class/gpio/gpio48/value", shell=True)
+        if self.use_serial:
+            print("serial on")
+            self.reader.write(b"H")
 
     def heater_off(self):
         print("heater off")
         if self.use_real_heater:
             subprocess.call("echo 0 > /sys/class/gpio/gpio48/value", shell=True)
+        if self.use_serial:
+            print("serial off")
+            self.reader.write(b"L")
 
     def run(self):
         while True:
@@ -182,15 +195,19 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument('--use-real-heater', action='store_true')
+    parser.add_argument('--use-serial', action='store_true')
     parser.add_argument("-t", "--temp", type=float, required=True, help="control temperature")
     parser.add_argument("-s", "--sensor",
                         choices=["uno","dos","tres","cuatro","cinco","seis"],
                         required=True,
                         help="sensor_to control")
+    parser.add_argument("-p", "--port",
+                        default="/dev/ttyACM0",
+                        help="port")
 
     args=parser.parse_args()
 
-    r = Reader()
+    r = Reader(tty_name=args.port)
     r.start()
 
     fp = FilePrinter()
@@ -199,6 +216,8 @@ if __name__ == "__main__":
     tc=ThermalController( temp=args.temp,
                          sensor=args.sensor.encode("utf-8"),
                          use_real_heater=args.use_real_heater,
+                         use_serial=args.use_serial,
+                         reader=r,
     )
     tc.start()
 
